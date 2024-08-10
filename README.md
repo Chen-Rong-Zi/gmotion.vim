@@ -6,7 +6,7 @@ After initial load, gmotion will automatically parse the current buffer, if it f
 By default, only `""`, `[]`, `''`, `()`, `<>`, `{}` surrounded text-object are defined, you candefine your own text-object, see[跳转到小节](#custome) for more details and limitations.
 
 ### `g` As General Motion
-If you familiar with vim's text-objects, than you must be used to those `ci(`、`di{`、`ci"`、`ya[` quick motions, however, sometimes you may find it takes a bit time to determine to press which key, not to mension `({<"` are ***far from***fingers.
+If you familiar with vim's text-objects, than you must be used to using these `ci(`、`di{`、`ci"`、`ya[` quick motions, however, sometimes you may find it takes a bit time to determine which key to press, not to mension `({<"` are ***far from*** fingers.
 This is where gmotion help you out, instead of typing `i(`、`i{`、`a[`、`a<`, typing `ig` and `ag` will work the same. With highlighted prefix and surffix, you can easily tell which text-object is on operation.
 
 ig and ag example:

@@ -365,21 +365,24 @@ class PairManager
 
         const re_match: Result = cache.SearchMatchStack(cursor_pos)
         if re_match.IsFailure
+            # case0: re_match: Failure, last_match: Failure
             const last_match: Result = cache.GetLastMatch(winid)
             if cache.GetLastMatch(winid).IsFailure
                 return
             else
+                # case1: re_match: Failure, last_match: Success
                 const match: MatchPair = last_match.inner_value
                 match.HighLightClear(winid)
                 cache.RemoveLastMatch(winid)
             endif
         else
             const match: MatchPair = re_match.inner_value
-
             if cache.GetLastMatch(winid).IsFailure
+                # case2: re_match: Success, last_match: Failure
                 match.HighLight(winid)
                 cache.AddLastMatch(winid, match)
             else
+                # case3: re_match: Success, last_match: Failure
                 const last_match: MatchPair = cache.GetLastMatch(winid).inner_value
                 if match.match_id == last_match.match_id
                     return
