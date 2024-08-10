@@ -3,10 +3,10 @@ provide a general motion for block text-objects with highlight!
 
 ## Usage
 After initial load, gmotion will automatically parse the current buffer, if it finds any block text-object (like ""、[]、''、()、<>, {}...) in current line, it will highlight the prefix and the suffix part of the text-object.
-By default, only `""`, `[]`, `''`, `()`, `<>`, `{}` surrounded text-object are defined, you candefine your own text-object, see[跳转到小节](#custome) for more details and limitations.
+By default, only `""`, `[]`, `''`, `()`, `<>`, `{}` surrounded text-object are defined, you can define your own text-object, see[Custom](# Custom Configuration) for more details and limitations.
 
 ### `g` As General Motion
-If you familiar with vim's text-objects, than you must be used to using these `ci(`、`di{`、`ci"`、`ya[` quick motions, however, sometimes you may find it takes a bit time to determine which key to press, not to mension `({<"` are ***far from*** fingers.
+If you familiar with vim's text-objects, than you must be used to using these `ci(`、`di{`、`ci"`、`ya[` quick motions, however, sometimes you may find it takes a bit time to determine which key to press, not to mention `({<"` are ***far from*** fingers.
 This is where gmotion help you out, instead of typing `i(`、`i{`、`a[`、`a<`, typing `ig` and `ag` will work the same. With highlighted prefix and surffix, you can easily tell which text-object is on operation.
 
 ig and ag example:
@@ -20,7 +20,7 @@ By typing `gh` or `gl`, you can move quickily to the left or right part of the t
 gmotion also help you change or delete text-objects's prefix and surffix.
 ![grd](./gif/gr.gif)
 
-## Custom Configuration (#custom)
+## Custom Configuration
 ### Add Your Text-Object
 By chaning the `g:gmotion_pair` in your `.vimrc`, you can add or delete text-objects, 
 ```vimscript
