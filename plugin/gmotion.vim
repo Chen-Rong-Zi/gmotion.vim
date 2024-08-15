@@ -93,31 +93,32 @@ class Position
         this.row = row
         this.bcol = col
     enddef
-    def EqualMe(other: Position): bool
-        return this.row ==# other.row && this.bcol ==# other.bcol
-    enddef
-    def BeforeMe(other: Position): bool
-        if this.EqualMe(other)
-            return false
-        else
-            return !this.AfterMe(other)
-        endif
-    enddef
-    def AfterMe(other: Position): bool
-        if other.row ># this.row
-            return true
-        elseif other.row ==# this.row && other.bcol > this.bcol
-            return true
-        else
-            return false
-        endif
-    enddef
-    def Distance(anchor: Position): number
-        const big_bit   = abs(anchor.row - this.row)
-        const small_bit = abs(anchor.bcol - this.bcol)
-        return big_bit * 10 + small_bit
-    enddef
 endclass
+
+def EqualMe(me: Position, other: Position): bool
+    return me.row ==# other.row && me.bcol ==# other.bcol
+enddef
+def BeforeMe(me: Position, other: Position): bool
+    if EqualMe(me, other)
+        return false
+    else
+        return !AfterMe(me, other)
+    endif
+enddef
+def AfterMe(me: Position, other: Position): bool
+    if other.row ># me.row
+        return true
+    elseif other.row ==# me.row && other.bcol > me.bcol
+        return true
+    else
+        return false
+    endif
+enddef
+def Distance(me: Position, anchor: Position): number
+    const big_bit   = abs(anchor.row - me.row)
+    const small_bit = abs(anchor.bcol - me.bcol)
+    return big_bit * 10 + small_bit
+enddef
 
 class MatchPair
     static var match_count = 0
@@ -133,14 +134,14 @@ class MatchPair
         this.match_id = MatchPair.match_count
     enddef
     def InMe(pos: Position): bool
-        if pos.BeforeMe(this.right) || pos.AfterMe(this.left)
+        if BeforeMe(pos, this.right) || AfterMe(pos, this.left)
             return false
         else
             return true
         endif
     enddef
     def Distance(anchor: Position): number
-        return min([anchor.Distance(this.left), anchor.Distance(this.right)])
+        return min([Distance(anchor, this.left), Distance(anchor, this.right)])
     enddef
     def HighLight(winid: number)
         this.winid_id[winid] = matchaddpos(g:gmotion_highligh_group, [[this.left.row,  this.left.bcol,  this.left.len], [this.right.row, this.right.bcol, this.right.len]])
@@ -255,6 +256,18 @@ def ParseLines(first_row: number, second_row: number): list<MatchPair>
     endfor
     return matches
 enddef
+def Max(lst: list<MatchPair>, cursor: Position): MatchPair
+    var min_dis: number = lst[0].Distance(cursor)
+    var min: MatchPair = lst[0]
+    for i in lst[1 : ]
+        var temp: number = i.Distance(cursor)
+        if temp < min_dis
+            min_dis = temp
+            min = i
+        endif
+    endfor
+    return min
+enddef
 
 class PairCache
     public var bufid: number
@@ -312,24 +325,11 @@ class PairCache
             return Failure.new("Error! cache is Empty")
         endif
 
-        final result: list<MatchPair> = this.cache[cursor_pos.row]
-        ->copy()
-        ->sort((match0: MatchPair, match1: MatchPair) => {
-            const d0: number = match0.Distance(cursor_pos)
-            const d1: number = match1.Distance(cursor_pos)
-            if d0 ==# 0
-                return -1
-            elseif d1 ==# 0
-                return 1
-            else
-                return d0 - d1
-            endif
-        })
-        if len(result) ==# 0
-            return Failure.new("Error! result is Empty")
-        else
-            return Success.new(result[0])
+        if len(this.cache[cursor_pos.row]) ==# 0
+            return Failure.new("Error! no MatchPair Found in this line")
         endif
+
+        return Success.new(Max(this.cache[cursor_pos.row], cursor_pos))
     enddef
     def GetLastMatch(winid: number): Result
         if this.last_match->keys()->index(string(winid)) ==# -1
@@ -377,6 +377,7 @@ class PairManager
             endif
         else
             const match: MatchPair = re_match.inner_value
+
             if cache.GetLastMatch(winid).IsFailure
                 # case2: re_match: Success, last_match: Failure
                 match.HighLight(winid)
@@ -385,6 +386,7 @@ class PairManager
                 # case3: re_match: Success, last_match: Failure
                 const last_match: MatchPair = cache.GetLastMatch(winid).inner_value
                 if match.match_id == last_match.match_id
+                    # echom 'echom Success Success 相同 耗时: ' .. (stamp4 - stamp2)
                     return
                 else
                     last_match.HighLightClear(winid)
@@ -580,27 +582,27 @@ class MatchOper
     static def Select(char: string, match: MatchPair)
         if char ==# 'd'
             MatchOper.DeletePair(match)
-            echom 'delete ' .. match.left.content .. match.right.content
-            # popup_notification(['delete' .. match.left.content .. match.right.content], {'time': 1000})
+            # echom 'delete ' .. match.left.content .. match.right.content
+            popup_notification(['delete' .. match.left.content .. match.right.content], {'time': 700})
         elseif char ==# 'c'
             const new_char = input('please enter')
             MatchOper.ChangePair(match, new_char, new_char)
-            # popup_notification(['replaced by' .. [new_char, new_char]->join(' ')], {})
-            echom 'replaced by ' .. [new_char, new_char]->join(' ')
+            popup_notification(['replaced by' .. [new_char, new_char]->join(' ')], {'time': 700})
+            # echom 'replaced by ' .. [new_char, new_char]->join(' ')
         elseif InChar(char)
             const [left, right] = g:gmotion_pair->copy()->filter((idx: number, p: list<string>): bool => p->index(char) !=# -1)[0]
             MatchOper.ChangePair(match, left, right)
-            # popup_notification(['replaced by' .. [left, right]->join(' ')], {})
-            echom 'replaced by ' .. [left, right]->join(' ')
+            popup_notification(['replaced by' .. [left, right]->join(' ')], {'time': 700})
+            # echom 'replaced by ' .. [left, right]->join(' ')
         else
-            # popup_notification(['undefined motion'], {})
-            echom 'undefined motion!'
+            popup_notification(['undefined motion'], {'time': 700})
+            # echom 'undefined operator!'
         endif
     enddef
 endclass
 
 aug Gmotion
-au User      Init PairManager.UpdateOnCondition(line('$'))
+au User      Init PairManager.UpdateOnCondition(line('w$'))
 au TextChanged  * PairManager.UpdateOnCondition()
 au InsertLeave  * PairManager.UpdateOnCondition()
 au CursorMoved  * PairManager.HighLight()
