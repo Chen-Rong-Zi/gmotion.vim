@@ -124,12 +124,13 @@ class MatchPair
     static var match_count = 0
     public var left:  Position
     public var right: Position
-    public final winid_id: dict<number>
+    public var hl_id: Result
     public final match_id: number
 
     def new(left: Position, right: Position)
         this.left  = left
         this.right = right
+        this.hl_id = Failure.new("null hl_id")
         MatchPair.match_count += 1
         this.match_id = MatchPair.match_count
     enddef
@@ -143,11 +144,15 @@ class MatchPair
     def Distance(anchor: Position): number
         return min([Distance(anchor, this.left), Distance(anchor, this.right)])
     enddef
-    def HighLight(winid: number)
-        this.winid_id[winid] = matchaddpos(g:gmotion_highligh_group, [[this.left.row,  this.left.bcol,  this.left.len], [this.right.row, this.right.bcol, this.right.len]])
+    def HighLight()
+        this.hl_id = Success.new(matchaddpos(g:gmotion_highligh_group, [[this.left.row,  this.left.bcol,  this.left.len], [this.right.row, this.right.bcol, this.right.len]]))
     enddef
     def HighLightClear(winid: number)
-        matchdelete(this.winid_id[winid], winid)
+        if win_id2tabwin(winid) ==# [0, 0]
+            return
+        endif
+        matchdelete(this.hl_id.inner_value, winid)
+        this.hl_id = Failure.new("hl_id is Null")
     enddef
 endclass
 
@@ -271,13 +276,13 @@ enddef
 
 class PairCache
     public var bufid: number
-    public var cache: dict<list<MatchPair>> = {}
-    public var last_match: dict<MatchPair> = {}
+    public final cache: dict<list<MatchPair>>
     public var stamp: float
     public var first_row:  number = 1
     public var second_row: number = 1
 
     def new(bufid: number)
+        this.cache = {}
         this.bufid = bufid
         this.stamp = reltimefloat(reltime())
     enddef
@@ -296,20 +301,18 @@ class PairCache
 
     def UpdateOnCondition(count: number = 0)
         const timestamp: float = reltimefloat(reltime())
-        const passby: float    = timestamp - this.stamp
+        const passby:    float = timestamp - this.stamp
         this.stamp = timestamp
         var linecnt: number
         if count !=# 0
             linecnt = count
         elseif passby <# 0.5
-            linecnt = 2
-        elseif passby <# 1.0
             linecnt = 5
-        elseif passby <# 5
+        elseif passby <# 1.0
             linecnt = 10
+        elseif passby <# 5
+            linecnt = 20
         elseif passby <# 10
-            linecnt = &lines / 2
-        elseif passby <# 20
             linecnt = &lines
         else
             linecnt = line('$')
@@ -331,76 +334,53 @@ class PairCache
 
         return Success.new(Max(this.cache[cursor_pos.row], cursor_pos))
     enddef
-    def GetLastMatch(winid: number): Result
-        if this.last_match->keys()->index(string(winid)) ==# -1
-            return Failure.new("No Last Match Found")
-        elseif winid->win_id2win() ==# 0
-            this.RemoveLastMatch(winid)
-            return Failure.new("Last Match Is No Longer Highlighted")
-        else
-            return Success.new(this.last_match[winid])
-        endif
-    enddef
-    def AddLastMatch(winid: number, match: MatchPair)
-        this.last_match[winid] = match
-    enddef
-    def RemoveLastMatch(winid: number)
-        this.last_match->remove(string(winid))
-    enddef
 endclass
 
 class PairManager
-    static final id_cache: dict<PairCache> = {}
+    static final id_cache:   dict<PairCache> = {}
+    static var   last_match: Result = Failure.new("null match")
+    static var   winid:      number = win_getid()
 
     static def HighLight()
-        const [_, row, col, _] = getpos('.')
-        const cursor_pos = Position.new('', row, col)
-        const bufid: number    = bufnr()
-        const winid: number    = win_getid()
-        const cache: PairCache = PairManager.Get(bufid)
+        const [_, row, col, _]      = getpos('.')
+        const bufid:      number    = bufnr()
+        const win_id:     number    = win_getid()
+        final cursor_pos: Position  = Position.new('', row, col)
+        final cache:      PairCache = PairManager.Get(bufid)
+        final re_match:   Result    = cache.SearchMatchStack(cursor_pos)
 
-        if row <# cache.first_row || row ># cache.second_row
-            cache.UpdateOnCondition((cache.second_row - cache.first_row) * 2)
-        endif
-
-        const re_match: Result = cache.SearchMatchStack(cursor_pos)
         if re_match.IsFailure
             # case0: re_match: Failure, last_match: Failure
-            const last_match: Result = cache.GetLastMatch(winid)
-            if cache.GetLastMatch(winid).IsFailure
-                return
-            else
+            if (row <# cache.first_row || row ># cache.second_row)
+                cache.UpdateOnCondition(&lines)
+            endif
+            if !PairManager.last_match.IsFailure
                 # case1: re_match: Failure, last_match: Success
-                const match: MatchPair = last_match.inner_value
-                match.HighLightClear(winid)
-                cache.RemoveLastMatch(winid)
+                const l_match: MatchPair = PairManager.last_match.inner_value
+                l_match.HighLightClear(PairManager.winid)
             endif
-        else
-            const match: MatchPair = re_match.inner_value
-
-            if cache.GetLastMatch(winid).IsFailure
-                # case2: re_match: Success, last_match: Failure
-                match.HighLight(winid)
-                cache.AddLastMatch(winid, match)
-            else
-                # case3: re_match: Success, last_match: Failure
-                const last_match: MatchPair = cache.GetLastMatch(winid).inner_value
-                if match.match_id == last_match.match_id
-                    # echom 'echom Success Success 相同 耗时: ' .. (stamp4 - stamp2)
-                    return
-                else
-                    last_match.HighLightClear(winid)
-                    cache.AddLastMatch(winid, match)
-                    match.HighLight(winid)
-                endif
+        elseif !re_match.IsFailure && PairManager.last_match.IsFailure
+            # case2: re_match: Success, last_match: Failure
+            const r_match: MatchPair = re_match.inner_value
+            r_match.HighLight()
+            PairManager.winid = win_id
+        elseif !re_match.IsFailure && !PairManager.last_match.IsFailure
+            # case3: re_match: Success, last_match: Failure
+            const r_match: MatchPair = re_match.inner_value
+            const l_match: MatchPair = PairManager.last_match.inner_value
+            if r_match.match_id != l_match.match_id
+                l_match.HighLightClear(PairManager.winid)
+                r_match.HighLight()
             endif
+            PairManager.winid = win_id
         endif
+        PairManager.last_match = re_match
 
     enddef
 
     static def UpdateOnCondition(count: number = 0)
-        const bufid: number    = bufnr()
-        const cache: PairCache = PairManager.Get(bufid)
+        final bufid: number    = bufnr()
+        final cache: PairCache = PairManager.Get(bufid)
         cache.UpdateOnCondition(count)
     enddef
 
@@ -412,10 +392,7 @@ class PairManager
     enddef
 
     static def IGmap()
-        const bufid: number    = bufnr()
-        const winid: number    = win_getid()
-        const cache: PairCache = PairManager.Get(bufid)
-        const last_match = cache.GetLastMatch(winid)
+        const l_match = PairManager.last_match
         if last_match.IsFailure
             return
         endif
@@ -455,11 +432,16 @@ class PairManager
         return
     enddef
 
+    static def RemoveCache()
+        const bufname = expand("<afile>")
+        const bufid = bufnr(bufname)
+        if PairManager.id_cache->keys()->index(string(bufid)) !=# -1
+            PairManager.id_cache->remove(string(bufid))
+        endif
+    enddef
+
     static def AGmap()
-        const bufid: number    = bufnr()
-        const winid: number    = win_getid()
-        const cache: PairCache = PairManager.Get(bufid)
-        const last_match = cache.GetLastMatch(winid)
+        const l_match = PairManager.last_match
         if last_match.IsFailure
             return
         endif
@@ -477,10 +459,7 @@ class PairManager
     enddef
 
     static def GHmap()
-        const bufid: number    = bufnr()
-        const winid: number    = win_getid()
-        const cache: PairCache = PairManager.Get(bufid)
-        const last_match = cache.GetLastMatch(winid)
+        const l_match = PairManager.last_match
         if last_match.IsFailure
             return
         endif
@@ -488,10 +467,7 @@ class PairManager
         cursor(match.left.row, match.left.bcol)
     enddef
     static def GLmap()
-        const bufid: number    = bufnr()
-        const winid: number    = win_getid()
-        const cache: PairCache = PairManager.Get(bufid)
-        const last_match = cache.GetLastMatch(winid)
+        const l_match = PairManager.last_match
         if last_match.IsFailure
             return
         endif
@@ -499,10 +475,7 @@ class PairManager
         cursor(match.right.row, match.right.bcol)
     enddef
     static def GRop()
-        const bufid: number    = bufnr()
-        const winid: number    = win_getid()
-        const cache: PairCache = PairManager.Get(bufid)
-        const last_match = cache.GetLastMatch(winid)
+        const l_match = PairManager.last_match
         if last_match.IsFailure
             return
         endif
@@ -602,11 +575,12 @@ class MatchOper
 endclass
 
 aug Gmotion
-au User      Init PairManager.UpdateOnCondition(line('w$'))
+au User      Init PairManager.UpdateOnCondition(&lines)
 au TextChanged  * PairManager.UpdateOnCondition()
 au InsertLeave  * PairManager.UpdateOnCondition()
 au CursorMoved  * PairManager.HighLight()
 au TextChanged  * PairManager.HighLight()
+au BufDelete    * PairManager.RemoveCache()
 aug END
 doautocmd User Init
 # au User Init PairManager.UpdateSyntaxTree(line('$'))
