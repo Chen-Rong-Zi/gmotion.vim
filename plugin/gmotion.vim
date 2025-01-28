@@ -121,18 +121,16 @@ def Distance(me: Position, anchor: Position): number
 enddef
 
 class MatchPair
-    static var match_count = 0
-    public var left:  Position
-    public var right: Position
-    public var hl_id: Result
-    public final match_id: number
+    public final left:  Position
+    public final right: Position
+    public var   hl_id: Result
+    public var winid: number
 
     def new(left: Position, right: Position)
         this.left  = left
         this.right = right
         this.hl_id = Failure.new("null hl_id")
-        MatchPair.match_count += 1
-        this.match_id = MatchPair.match_count
+        this.winid = 0
     enddef
     def InMe(pos: Position): bool
         if BeforeMe(pos, this.right) || AfterMe(pos, this.left)
@@ -145,14 +143,14 @@ class MatchPair
         return min([Distance(anchor, this.left), Distance(anchor, this.right)])
     enddef
     def HighLight()
+        # echom "HighLight" .. string([this.left.content, this.right.content])
         this.hl_id = Success.new(matchaddpos(g:gmotion_highligh_group, [[this.left.row,  this.left.bcol,  this.left.len], [this.right.row, this.right.bcol, this.right.len]]))
+        this.winid = win_getid()
     enddef
-    def HighLightClear(winid: number)
-        if win_id2tabwin(winid) ==# [0, 0]
-            return
-        endif
-        matchdelete(this.hl_id.inner_value, winid)
-        this.hl_id = Failure.new("hl_id is Null")
+    def HighLightClear()
+        # echom winid
+        matchdelete(this.hl_id.inner_value, this.winid)
+        this.hl_id = Failure.new("null hl_id")
     enddef
 endclass
 
@@ -234,16 +232,14 @@ def ParseLine(line: string, row: number, stack: MatchParseStack): list<any>
     const char_idx = Enumerate(characters)
     var bcol: number = 0
     for [char, idx] in char_idx
-        if ! InChar(char)
+        const pos: Position = Position.new(char, row, bcol + 1)
+        if !InChar(char)
             # do nothing
         elseif InSchar(char)
-            const pos: Position = Position.new(char, row, bcol + 1)
             result += stack.PushSpecial(pos)
         elseif InLpart(char)
-            const pos: Position = Position.new(char, row, bcol + 1)
             stack.PushLeft(pos)
         else
-            const pos: Position = Position.new(char, row, bcol + 1)
             result += stack.PushRight(pos)
         endif
         bcol += len(char)
@@ -339,40 +335,46 @@ endclass
 class PairManager
     static final id_cache:   dict<PairCache> = {}
     static var   last_match: Result = Failure.new("null match")
-    static var   winid:      number = win_getid()
 
     static def HighLight()
         const [_, row, col, _]      = getpos('.')
         const bufid:      number    = bufnr()
-        const win_id:     number    = win_getid()
         final cursor_pos: Position  = Position.new('', row, col)
         final cache:      PairCache = PairManager.Get(bufid)
         final re_match:   Result    = cache.SearchMatchStack(cursor_pos)
+        final winid:      number    = win_getid()
 
         if re_match.IsFailure
             # case0: re_match: Failure, last_match: Failure
+            # echom  "case0: re_match: Failure, last_match: Failure"
             if (row <# cache.first_row || row ># cache.second_row)
                 cache.UpdateOnCondition(&lines)
             endif
-            if !PairManager.last_match.IsFailure
+            if false ==# PairManager.last_match.IsFailure
                 # case1: re_match: Failure, last_match: Success
+                # echom  "case1: re_match: Failure, last_match: Success"
                 const l_match: MatchPair = PairManager.last_match.inner_value
-                l_match.HighLightClear(PairManager.winid)
+                l_match.HighLightClear()
             endif
-        elseif !re_match.IsFailure && PairManager.last_match.IsFailure
+        elseif (!re_match.IsFailure) && PairManager.last_match.IsFailure
             # case2: re_match: Success, last_match: Failure
+            # echom "case2: re_match: Success, last_match: Failure"
             const r_match: MatchPair = re_match.inner_value
             r_match.HighLight()
-            PairManager.winid = win_id
-        elseif !re_match.IsFailure && !PairManager.last_match.IsFailure
-            # case3: re_match: Success, last_match: Failure
+        elseif (!re_match.IsFailure) && (!PairManager.last_match.IsFailure)
+            # case3: re_match: Success, last_match: Success
+            # echom "case3: re_match: Success, last_match: Success"
             const r_match: MatchPair = re_match.inner_value
             const l_match: MatchPair = PairManager.last_match.inner_value
-            if r_match.match_id != l_match.match_id
-                l_match.HighLightClear(PairManager.winid)
+
+            # echom "r_match.hl_id, l_match.hl_id = " .. string([r_match.hl_id.inner_value, l_match.hl_id.inner_value])
+            # echom "r_match.winid, l_match.winid = " .. string([r_match.winid, l_match.winid])
+            if (winid !=# l_match.winid)
+                || (true ==# r_match.hl_id.IsFailure)
+                || (l_match.hl_id.inner_value !=# r_match.hl_id.inner_value)
+                l_match.HighLightClear()
                 r_match.HighLight()
             endif
-            PairManager.winid = win_id
         endif
         PairManager.last_match = re_match
 
@@ -427,7 +429,12 @@ class PairManager
                 cursor(match.left.row, match.left.bcol + match.left.len)
             endif
             normal! v
-            cursor(match.right.row, match.right.bcol - 1)
+            if match.right.bcol ==# 1
+                # case2: right is the first character
+                cursor(match.right.row - 1, len(getline(match.right.row - 1)))
+            else
+                cursor(match.right.row, match.right.bcol - 1)
+            endif
         endif
         return
     enddef
