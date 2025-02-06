@@ -6,8 +6,8 @@
 if !has('vim9script')
     finish
 endif
-" vim9script noclear
-vim9script
+vim9script noclear
+# vim9script
 
 if exists("g:loaded_gmotion")
     finish
@@ -51,10 +51,10 @@ endif
 
 g:loaded_gmotion = 1
 const special_pair = g:gmotion_pair->copy()->filter((idx: number, match: list<string>) => match[0] ==# match[1])
+const schar = special_pair->copy()->map((i: number, v: list<string>) => v[0])
 const lpart = g:gmotion_pair->copy()->map((i: number, v: list<string>) => v[0])
 const rpart = g:gmotion_pair->copy()->map((i: number, v: list<string>) => v[1])
 const chars = lpart + rpart
-const schar = special_pair->copy()->map((i: number, v: list<string>) => v[0])
 
 const InPair  = (lst:  list<string>): bool => g:gmotion_pair->index(lst) !=# -1
 const InChar  = (char: string):       bool => chars->index(char)  !=# -1
@@ -124,7 +124,7 @@ enddef
 def Distance(me: Position, anchor: Position): number
     const big_bit   = abs(anchor.row - me.row)
     const small_bit = abs(anchor.bcol - me.bcol)
-    return big_bit * 10 + small_bit
+    return big_bit * 1000 + small_bit
 enddef
 
 class MatchPair
@@ -243,7 +243,6 @@ class BackStack extends Stack
 
         const r_pos: Position = top.inner_value
         if InPair([l_pos.content, r_pos.content])
-            echom 'pop'
             this.Pop()
             return [MatchPair.new(l_pos, r_pos)]
         else
@@ -280,7 +279,7 @@ class MatchPairStack
     def PushBack(pos: Position): list<MatchPair>
         # Dbg(pos, "back_pos")
         if InSchar(pos.content)
-            return this.front.PushSpecial(pos)
+            return this.back.PushSpecial(pos)
         elseif InLpart(pos.content)
             return this.back.PushLeft(pos)
         else
@@ -322,23 +321,29 @@ enddef
 def ParseFirstLine(row: number): list<any>
     var front: list<any> = Tokenize(getline(row), row)
     var back:  list<any> = []
-    while (0 != front->len()) && InRpart(front[0].content)
-        back += [front->remove(0)]
+    while (0 != front->len()) && (!InLpart(front[0].content))
+        back->insert(front->remove(0), 0)
     endwhile
 
     var stack = MatchPairStack.new(Stack.new(), BackStack.new())
 
     var front_result = front->map((_, front_ele) => {
         front_ele.is_first_line = true
-        return stack.PushFront(front_ele)
+        const result = stack.PushFront(front_ele)
+        if result ==# [] && (!InLpart(front_ele.content))
+            # back += [front_ele]
+            back->insert(front_ele, 0)
+        endif
+        return result
     })->reduce((pre, curr) => pre + curr, [])
 
+    # Dbg(back, "back")
     var back_result = back->map((_, back_ele) => {
         back_ele.is_first_line = true
         return stack.PushBack(back_ele)
     })->reduce((pre, curr) => pre + curr, [])
 
-    # Dbg([back_result + front_result, stack], "[back_result + front_result, stack]")
+    # Dbg([(back_result + front_result)->map((_, ele) => [ele.left.content, ele.right.content]), stack], "[back_result + front_result, stack]")
     return [back_result + front_result, stack]
 enddef
 
@@ -360,6 +365,7 @@ def ParseLines(first_row: number, second_row: number): list<MatchPair>
     endfor
     return matches
 enddef
+
 def Max(lst: list<MatchPair>, cursor: Position): MatchPair
     var min_dis: number = lst[0].Distance(cursor)
     var min: MatchPair = lst[0]
@@ -444,7 +450,7 @@ class PairCache
         this.first_row = back_path
         this.second_row = front_path
 
-        echom "update " .. string([back_path, front_path])
+        # echom "update " .. string([back_path, front_path])
     enddef
 
     def UpdateOnCondition(count: number = 0)
@@ -501,7 +507,7 @@ class PairManager
 
         if re_match.IsFailure
             # case0: re_match: Failure, last_match: Failure
-            echom  "case0: re_match: Failure, last_match: Failure"
+            # " echom  "case0: re_match: Failure, last_match: Failure"
             if (row <# cache.first_row || row ># cache.second_row)
                 cache.UpdateOnNeed(row, make_new_cache)
                 re_match = cache.SearchMatchStack(cursor_pos)
@@ -511,18 +517,18 @@ class PairManager
             endif
             if false ==# PairManager.last_match.IsFailure
                 # case1: re_match: Failure, last_match: Success
-                echom  "case1: re_match: Failure, last_match: Success"
+                # echom  "case1: re_match: Failure, last_match: Success"
                 const l_match: MatchPair = PairManager.last_match.inner_value
                 l_match.HighLightClear()
             endif
         elseif (!re_match.IsFailure) && PairManager.last_match.IsFailure
             # case2: re_match: Success, last_match: Failure
-            echom "case2: re_match: Success, last_match: Failure"
+            # echom "case2: re_match: Success, last_match: Failure"
             const r_match: MatchPair = re_match.inner_value
             r_match.HighLight()
         elseif (!re_match.IsFailure) && (!PairManager.last_match.IsFailure)
             # case3: re_match: Success, last_match: Success
-            echom "case3: re_match: Success, last_match: Success"
+            # echom "case3: re_match: Success, last_match: Success"
             const r_match: MatchPair = re_match.inner_value
             const l_match: MatchPair = PairManager.last_match.inner_value
 
