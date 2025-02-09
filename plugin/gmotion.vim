@@ -198,7 +198,10 @@ class Stack
         this.content->insert(value, 0)
     enddef
 
+endclass
 
+
+class FrontStack extends Stack
     def PushLeft(pos: Position): list<MatchPair>
         this.Push(pos)
         return []
@@ -216,20 +219,6 @@ class Stack
             return [MatchPair.new(l_pos, r_pos)]
         else
             return []
-        endif
-    enddef
-    def PushSpecial(r_pos: Position): list<MatchPair>
-        const top: Result = this.Top()
-        if top.IsFailure ==# true
-            return this.PushLeft(r_pos)
-        endif
-
-        const l_pos: Position = top.inner_value
-        if InPair([l_pos.content, r_pos.content])
-            this.Pop()
-            return [MatchPair.new(l_pos, r_pos)]
-        else
-            return this.PushLeft(r_pos)
         endif
     enddef
 endclass
@@ -257,17 +246,33 @@ class BackStack extends Stack
 endclass
 
 class MatchPairStack
-    public final front: Stack
-    public final back: BackStack
+    public final front:         FrontStack
+    public final front_special: FrontStack
+    public final back:          BackStack
+    public final back_special:  BackStack
 
-    def new(front: Stack, back: BackStack)
-        this.back = back
-        this.front = front
+    def new()
+        this.back          = BackStack.new()
+        this.back_special  = BackStack.new()
+        this.front         = FrontStack.new()
+        this.front_special = FrontStack.new()
     enddef
 
     def PushFront(pos: Position): list<MatchPair>
+        # Dbg("push front" .. pos.content, '')
         if InSchar(pos.content)
-            return this.front.PushSpecial(pos)
+            const top: Result = this.front_special.Top()
+            if top.IsFailure ==# true
+                return this.front_special.PushLeft(pos)
+            endif
+
+            const l_pos: Position = top.inner_value
+            if InPair([l_pos.content, pos.content])
+                this.front_special.Pop()
+                return [MatchPair.new(l_pos, pos)]
+            else
+                return this.front_special.PushLeft(pos)
+            endif
         elseif InLpart(pos.content)
             this.front.PushLeft(pos)
             return []
@@ -279,7 +284,18 @@ class MatchPairStack
     def PushBack(pos: Position): list<MatchPair>
         # Dbg(pos, "back_pos")
         if InSchar(pos.content)
-            return this.back.PushSpecial(pos)
+            const top: Result = this.back_special.Top()
+            if top.IsFailure ==# true
+                return this.back_special.PushLeft(pos)
+            endif
+
+            const l_pos: Position = top.inner_value
+            if InPair([l_pos.content, pos.content])
+                this.back_special.Pop()
+                return [MatchPair.new(l_pos, pos)]
+            else
+                return this.back_special.PushLeft(pos)
+            endif
         elseif InLpart(pos.content)
             return this.back.PushLeft(pos)
         else
@@ -325,7 +341,7 @@ def ParseFirstLine(row: number): list<any>
         back->insert(front->remove(0), 0)
     endwhile
 
-    var stack = MatchPairStack.new(Stack.new(), BackStack.new())
+    var stack = MatchPairStack.new()
 
     var front_result = front->map((_, front_ele) => {
         front_ele.is_first_line = true
@@ -430,6 +446,7 @@ class PairCache
                 ->map((_, ele) => stack.PushBack(ele))
                 ->reduce((pre, curr) => pre + curr, [])
         endwhile
+        # Dbg([stack.front, stack.back]->map((_, v) => v.content->map((_, vi) => vi.content) ), 'stack')
         return [result, back_path, front_path]
     enddef
 
