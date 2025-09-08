@@ -7,11 +7,13 @@ if !has('vim9script')
     finish
 endif
 vim9script noclear
-# vim9script
 
 if exists("g:loaded_gmotion")
     finish
 endif
+
+const MAX_TOKENS = 100
+const MAX_CHARS = 10000
 
 
 if exists("g:gmotion_highligh_group")
@@ -42,9 +44,6 @@ else
         ['(', ')'],
         ['[', ']'],
         ['{', '}'],
-        ['<', '>'],
-        ['"', '"'],
-        ["'", "'"],
         ['`', '`'],
     ]
 endif
@@ -62,13 +61,20 @@ const InRpart = (char: string):       bool => rpart->index(char)  !=# -1
 const InLpart = (char: string):       bool => lpart->index(char)  !=# -1
 const InSchar = (char: string):       bool => schar->index(char)  !=# -1
 
+const TheOtherPair = g:gmotion_pair->copy()->map((idx: number, pair: list<string>) => {
+        return [[pair[0], pair], [pair[1], pair]]
+    })->reduce((pre: dict<list<any>>, curr: list<list<any>>) => {
+        pre[curr[0][0]] = curr[0][1]
+        pre[curr[1][0]] = curr[1][1]
+        return pre
+    }, {})
+
 abstract class Result
     var inner_value: any
     var IsFailure: bool
 endclass
 
 class Success extends Result
-    # unit :: a -> Success a
     def new(value: any)
         this.inner_value = value
         this.IsFailure = false
@@ -76,7 +82,6 @@ class Success extends Result
 endclass
 
 class Failure extends Result
-    # unit :: a -> Failure a
     def new(value: any)
         this.inner_value = value
         this.IsFailure = true
@@ -98,9 +103,6 @@ class Position
     enddef
 endclass
 
-# def Dbg(val: any, format: string = 'default_var')
-    # echom format .. " = " .. string(val)
-# enddef
 
 def EqualMe(me: Position, other: Position): bool
     return me.row ==# other.row && me.bcol ==# other.bcol
@@ -147,10 +149,18 @@ class MatchPair
         endif
     enddef
     def Distance(anchor: Position): number
-        return min([Distance(anchor, this.left), Distance(anchor, this.right)])
+        if this.left.row !=# anchor.row
+            return abs(this.right.bcol - anchor.bcol)
+        elseif this.right.row !=# anchor.row
+            return abs(this.left.bcol - anchor.bcol)
+        else
+            return min([
+                abs(this.left.bcol - anchor.bcol),
+                abs(this.right.bcol - anchor.bcol)
+            ])
+        endif
     enddef
     def HighLight()
-        # echom "HighLight" .. string([this.left.content, this.right.content])
         this.hl_id = Success.new(matchaddpos(g:gmotion_highligh_group, [[this.left.row,  this.left.bcol,  this.left.len], [this.right.row, this.right.bcol, this.right.len]]))
         this.winid = win_getid()
     enddef
@@ -158,9 +168,13 @@ class MatchPair
         if win_id2tabwin(this.winid) ==# [0, 0]
             return
         endif
+        if this.hl_id.IsFailure
+            return
+        endif
         matchdelete(this.hl_id.inner_value, this.winid)
         this.hl_id = Failure.new("null hl_id")
     enddef
+
 endclass
 
 
@@ -259,7 +273,6 @@ class MatchPairStack
     enddef
 
     def PushFront(pos: Position): list<MatchPair>
-        # Dbg("push front" .. pos.content, '')
         if InSchar(pos.content)
             const top: Result = this.front_special.Top()
             if top.IsFailure ==# true
@@ -282,7 +295,6 @@ class MatchPairStack
     enddef
 
     def PushBack(pos: Position): list<MatchPair>
-        # Dbg(pos, "back_pos")
         if InSchar(pos.content)
             const top: Result = this.back_special.Top()
             if top.IsFailure ==# true
@@ -325,7 +337,6 @@ def Tokenize(line: string, row: number): list<any>
     for [char, idx] in Enumerate(characters)
         const pos: Position = Position.new(char, row, bcol + 1)
         if !InChar(char)
-            # do nothing
         else
             result += [pos]
         endif
@@ -334,8 +345,206 @@ def Tokenize(line: string, row: number): list<any>
     return result
 enddef
 
-def ParseFirstLine(row: number): list<any>
-    var front: list<any> = Tokenize(getline(row), row)
+def ExtractPairToken(line: string, content: list<string>, row: number): list<Position>
+    const characters = line->split('\zs')
+    var result: list<Position>  = []
+    var bcol: number = 0
+    for [char, idx] in Enumerate(characters)
+        if content->index(char) !=# -1
+            const pos: Position = Position.new(char, row, bcol + 1)
+            result += [pos]
+        endif
+        bcol += len(char)
+    endfor
+    return result
+enddef
+
+def OnlyNthPosition(tokens: list<Position>, index: number): list<Position>
+    if len(tokens) ==# 0
+        return []
+    else
+        return tokens->copy()->filter((i: number, pos: Position) => pos.content ==# tokens[index].content)
+    endif
+enddef
+
+def FParseFirstLine(tokens: list<any>, row: number): list<list<Position>>
+    var front: list<any> = tokens
+    var back:  list<any> = []
+    var front_end = 0
+    var back_end  = -1
+    if front ==# []
+        return []
+    endif
+    while (0 != front->len()) && (!InLpart(front[0].content))
+        back->insert(front->remove(0), 0)
+    endwhile
+
+    if len(front) >=# 2
+        var last_tk = front[0]
+        var lpair = TheOtherPair[last_tk.content]
+        var i = 1
+        while i < len(front)
+            if front[i].content ==# lpair[1]
+                front = front[2 : ]
+            else
+                last_tk = front[i]
+                lpair = TheOtherPair[last_tk.content]
+            endif
+            i  += 1
+        endwhile
+    endif
+
+    if len(back) >=# 2
+        var last_tk = back[-1]
+        var lpair = TheOtherPair[last_tk.content]
+        var i = -2
+        while abs(i) < len(back)
+            if back[i].content ==# lpair[0]
+                back = back[ : -3]
+            else
+                last_tk = back[i]
+                lpair = TheOtherPair[last_tk.content]
+            endif
+            i  -= 1
+        endwhile
+    endif
+
+    return [
+        OnlyNthPosition(back,  back_end),
+        OnlyNthPosition(front, front_end)
+    ]
+enddef
+
+def ParseLineRange(row: number): Result # list<number>
+    var thisline = getline(row)
+    var thisline_tokens = Tokenize(thisline, row)
+    var total_chars  = len(thisline)
+    var total_tokens = len(thisline_tokens)
+    const MAX_ROWS = line('$')
+    const back_front = FParseFirstLine(thisline_tokens, row)
+    var front_path = row
+    var back_path  = row
+    var level = 1
+    var left_end = front_path
+    var right_end = back_path
+    if [[], []] ==# back_front
+        return Success.new([row, row])
+    elseif [] ==# back_front
+        return Success.new([-1, -1])
+    endif
+    const [back, front] = back_front
+
+    if len(front) ==# 0
+        right_end = front_path
+    else
+        const lpair = TheOtherPair[front[0].content]
+        while front_path <# MAX_ROWS
+            front_path += 1
+            thisline = getline(front_path)
+            total_chars += len(thisline)
+            const pairtokens = ExtractPairToken(thisline, lpair, front_path)
+            total_tokens += len(pairtokens)
+            if total_chars >=# MAX_CHARS || total_tokens >=# MAX_TOKENS
+                return Failure.new('Exceed Max Chars:' .. string(total_chars) .. "  Max Tokens: " .. string(total_tokens))
+            endif
+            for tk in pairtokens
+                if tk.content ==# lpair[1]
+                    level -= 1
+                    if level ==# 0
+                        break
+                    endif
+                elseif tk.content ==# lpair[0]
+                    level += 1
+                endif
+            endfor
+            if level ==# 0
+                right_end = front_path
+                break
+            endif
+        endwhile
+    endif
+
+    if len(back) ==# 0
+        left_end = back_path
+    else
+        const rpair = TheOtherPair[back[-1].content]
+        while back_path > 1
+            back_path -= 1
+            thisline = getline(back_path)
+            total_chars += len(thisline)
+            total_tokens += len(thisline)
+            const pairtokens = ExtractPairToken(thisline, rpair, back_path)
+            total_tokens += len(pairtokens)
+            if total_chars >=# MAX_CHARS || total_tokens >=# MAX_TOKENS
+                return Failure.new('Exceed Max Chars:' .. string(total_chars) .. "  Max Tokens: " .. string(total_tokens))
+            endif
+            for tk in pairtokens
+                if tk.content ==# rpair[0]
+                    level -= 1
+                    if level ==# 0
+                        break
+                    endif
+                elseif tk.content ==# rpair[1]
+                    level += 1
+                endif
+            endfor
+            if level ==# 0
+                left_end = back_path
+                break
+            endif
+        endwhile
+    endif
+    return Success.new([left_end, right_end])
+enddef
+
+
+def From_capture(format: string, line: string, base_row: number): Position
+    const regex     = matchstr(line, format)
+    const row_index = substitute(regex, format, '\1', '')
+    const col_index = substitute(regex, format, '\2', '')
+    const row       = str2nr(row_index) + base_row
+    const col       = str2nr(col_index) + 1
+    return Position.new(
+        line[-2 : -2],
+        row,
+        col
+    )
+enddef
+
+def From_pattern_capture(format: string, lines: list<string>, base_row: number): MatchPair
+    const left_pos  = From_capture(format, lines[1][23 : ], base_row)
+    const right_pos = From_capture(format, lines[2][24 : ], base_row)
+    return MatchPair.new(
+        left_pos,
+        right_pos
+    )
+enddef
+
+def F_parse(lines: list<string>, base_row: number): list<MatchPair>
+    const format = 'start: (\(\d\+\), \(\d\+\)), end: (\(\d\+\), \(\d\+\)).*'
+    final matches: list<MatchPair> = []
+    const length = lines->len()
+    var base = 0
+    while true
+        if base >=# length
+            break
+        endif
+        const m = From_pattern_capture(format, lines[base : base + 2], base_row)
+        matches->extend([m])
+        base += 3
+    endwhile
+    return matches
+enddef
+
+def From_tree_sitter(output: string, base: number): list<MatchPair>
+    const lines = output->split("\n")
+    const length = len(lines)
+    return F_parse(lines[ : -(length % 3 + 1)], base)
+enddef
+
+
+def ParseFirstLine(tokens: list<any>, row: number): list<any>
+    var front: list<any> = tokens
     var back:  list<any> = []
     while (0 != front->len()) && (!InLpart(front[0].content))
         back->insert(front->remove(0), 0)
@@ -347,39 +556,25 @@ def ParseFirstLine(row: number): list<any>
         front_ele.is_first_line = true
         const result = stack.PushFront(front_ele)
         if result ==# [] && (!InLpart(front_ele.content))
-            # back += [front_ele]
             back->insert(front_ele, 0)
         endif
         return result
     })->reduce((pre, curr) => pre + curr, [])
 
-    # Dbg(back, "back")
     var back_result = back->map((_, back_ele) => {
         back_ele.is_first_line = true
         return stack.PushBack(back_ele)
     })->reduce((pre, curr) => pre + curr, [])
 
-    # Dbg([(back_result + front_result)->map((_, ele) => [ele.left.content, ele.right.content]), stack], "[back_result + front_result, stack]")
     return [back_result + front_result, stack]
 enddef
 
-def ParseFrontLine(row: number): list<any>
-    return Tokenize(getline(row), row)
+def ParseFrontLine(content: string, row: number): list<any>
+    return Tokenize(content, row)
 enddef
 
-def ParseBackLine(row: number): list<any>
-    return Tokenize(getline(row), row)->reverse()
-enddef
-
-def ParseLines(first_row: number, second_row: number): list<MatchPair>
-    final matches: list<MatchPair> = []
-    var stack: MatchPairStack = MatchPairStack.new()
-    for [line, idx] in Enumerate(getline(first_row, second_row))
-        const parse_result = ParseLine(line, first_row + idx, stack)
-        matches->extend(parse_result[0])
-        stack = parse_result[1]
-    endfor
-    return matches
+def ParseBackLine(content: string, row: number): list<any>
+    return Tokenize(content, row)->reverse()
 enddef
 
 def Max(lst: list<MatchPair>, cursor: Position): MatchPair
@@ -411,6 +606,7 @@ class PairCache
     def Update(row0: number, row1: number)
         const match_lst: list<MatchPair> = ParseLines(row0, row1)
 
+        this.cache = []
         for row in range(row0, row1)
             this.cache[row] = []
         endfor
@@ -420,9 +616,17 @@ class PairCache
         endfor
     enddef
 
-    def UpdateOnNeedHelper(row: number): list<any>
+
+    def UpdateOnNeedHelper(row: number): Result
         const MAX_ROWS = line('$')
-        const result_stack = ParseFirstLine(row)
+        var thisline = getline(row)
+        var total_chars = len(thisline)
+        var thisline_tokens = Tokenize(thisline, row)
+        var total_tokens = len(thisline_tokens)
+        if total_chars >=# MAX_CHARS || total_tokens >=# MAX_TOKENS
+            return Failure.new('Exceed Max Chars:' .. string(total_chars) .. "  Max Tokens: " .. string(total_tokens))
+        endif
+        const result_stack = ParseFirstLine(thisline_tokens, row)
 
         var result = result_stack[0]
         var stack = result_stack[1]
@@ -433,8 +637,18 @@ class PairCache
                 && stack.front.Last().inner_value.is_first_line
                 && (front_path <=# MAX_ROWS)
             front_path += 1
-            result += ParseFrontLine(front_path)
-                ->map((_, ele) => stack.PushFront(ele))
+            thisline = getline(front_path)
+            total_chars += len(thisline)
+
+            thisline_tokens = Tokenize(thisline, front_path)
+            total_tokens += len(thisline_tokens)
+            if total_chars >=# MAX_CHARS || total_tokens >=# MAX_TOKENS
+                return Failure.new('Exceed Max Chars:' .. string(total_chars) .. "  Max Tokens: " .. string(total_tokens))
+            endif
+            result += thisline_tokens
+                ->map((_, ele) => {
+                    return stack.PushFront(ele)
+                })
                 ->reduce((pre, curr) => pre + curr, [])
         endwhile
 
@@ -442,18 +656,31 @@ class PairCache
                 && stack.back.Last().inner_value.is_first_line
                 && (back_path >=# 1)
             back_path -= 1
-            result += ParseBackLine(back_path)
-                ->map((_, ele) => stack.PushBack(ele))
+            thisline = getline(front_path)
+            total_chars += len(thisline)
+
+            thisline_tokens = Tokenize(thisline, back_path)
+            total_tokens += len(thisline_tokens)
+            if total_chars >=# MAX_CHARS || total_tokens >=# MAX_TOKENS
+                return Failure.new('Exceed Max Chars:' .. string(total_chars) .. "  Max Tokens: " .. string(total_tokens))
+            endif
+            result += thisline_tokens->reverse()
+                ->map((_, ele) => {
+                    return stack.PushBack(ele)
+                })
                 ->reduce((pre, curr) => pre + curr, [])
         endwhile
-        # Dbg([stack.front, stack.back]->map((_, v) => v.content->map((_, vi) => vi.content) ), 'stack')
-        return [result, back_path, front_path]
+        return Success.new([result, back_path, front_path])
     enddef
 
-    def UpdateOnNeed(row: number, make_new_cache: bool = 1)
-        const [match_lst, back_path, front_path] = this.UpdateOnNeedHelper(row)
+    def UpdateOnNeed(row: number, total: bool): Result
+        const parse_result: Result = this.UpdateOnNeedHelper(row)
+        if parse_result.IsFailure
+            return parse_result
+        endif
+        const [match_lst, back_path, front_path] = parse_result.inner_value
 
-        if make_new_cache
+        if total
             this.cache = {}
         endif
 
@@ -467,42 +694,28 @@ class PairCache
         this.first_row = back_path
         this.second_row = front_path
 
-        # echom "update " .. string([back_path, front_path])
+        return Success.new('')
     enddef
 
-    def UpdateOnCondition(count: number = 0)
-        const timestamp: float = reltimefloat(reltime())
-        const passby:    float = timestamp - this.stamp
-        this.stamp = timestamp
-        var linecnt: number
-        if count !=# 0
-            linecnt = count
-        elseif passby <# 0.5
-            linecnt = 5
-        elseif passby <# 1.0
-            linecnt = 10
-        elseif passby <# 5
-            linecnt = 20
-        elseif passby <# 10
-            linecnt = &lines
-        else
-            linecnt = line('$')
-        endif
-        const [_, row, _, _] = getpos('.')
-        this.first_row  = max([1,         row - linecnt])
-        this.second_row = min([line('$'), row + linecnt])
-        this.Update(this.first_row, this.second_row)
+    def UpdateOnCallback(match_lst: list<MatchPair>, start: number, end: number)
+        for match in match_lst
+            this.cache[match.right.row]->insert(match, 0)
+            this.cache[match.left.row]->insert(match,  0)
+        endfor
+    enddef
+
+    def ClearCache(clear_start: number, clear_end: number)
+        for r in range(clear_start, clear_end)
+            this.cache[r] = []
+        endfor
     enddef
 
     def SearchMatchStack(cursor_pos: Position): Result
-        # echom string(this.cache)
-        if this.cache->keys()->index(string(cursor_pos.row)) ==# -1
-            # echom "Error! cache is Empty"
+        if this.cache->has_key(string(cursor_pos.row)) ==# 0
             return Failure.new("Error! cache is Empty")
         endif
 
         if len(this.cache[cursor_pos.row]) ==# 0
-            # echom "Error! no MatchPair Found in this line"
             return Failure.new("Error! no MatchPair Found in this line")
         endif
 
@@ -519,38 +732,56 @@ class PairManager
         const bufid:      number    = bufnr()
         final cursor_pos: Position  = Position.new('', row, col)
         final cache:      PairCache = PairManager.Get(bufid)
-        var re_match:   Result    = cache.SearchMatchStack(cursor_pos)
+        var   re_match:   Result    = cache.SearchMatchStack(cursor_pos)
         final winid:      number    = win_getid()
 
-        if re_match.IsFailure
-            # case0: re_match: Failure, last_match: Failure
-            # " echom  "case0: re_match: Failure, last_match: Failure"
-            if (row <# cache.first_row || row ># cache.second_row)
-                cache.UpdateOnNeed(row, make_new_cache)
-                re_match = cache.SearchMatchStack(cursor_pos)
-                if false ==# re_match.IsFailure
-                    re_match.inner_value.HighLight()
-                endif
+        if [re_match.IsFailure, last_match.IsFailure] ==# [true, true]
+            OnlyBufType(true)
+            re_match = cache.SearchMatchStack(cursor_pos)
+            if false ==# re_match.IsFailure
+                re_match.inner_value.HighLight()
             endif
-            if false ==# PairManager.last_match.IsFailure
-                # case1: re_match: Failure, last_match: Success
-                # echom  "case1: re_match: Failure, last_match: Success"
-                const l_match: MatchPair = PairManager.last_match.inner_value
-                l_match.HighLightClear()
+        elseif [re_match.IsFailure, last_match.IsFailure] ==# [true, false]
+            const l_match: MatchPair = PairManager.last_match.inner_value
+            l_match.HighLightClear()
+            OnlyBufType()
+            re_match = cache.SearchMatchStack(cursor_pos)
+            if false ==# re_match.IsFailure
+                re_match.inner_value.HighLight()
             endif
-        elseif (!re_match.IsFailure) && PairManager.last_match.IsFailure
-            # case2: re_match: Success, last_match: Failure
-            # echom "case2: re_match: Success, last_match: Failure"
+
+        elseif [re_match.IsFailure, last_match.IsFailure] ==# [false, true]
             const r_match: MatchPair = re_match.inner_value
             r_match.HighLight()
-        elseif (!re_match.IsFailure) && (!PairManager.last_match.IsFailure)
-            # case3: re_match: Success, last_match: Success
-            # echom "case3: re_match: Success, last_match: Success"
+        elseif [re_match.IsFailure, last_match.IsFailure] ==# [false, false]
             const r_match: MatchPair = re_match.inner_value
             const l_match: MatchPair = PairManager.last_match.inner_value
 
-            # echom "r_match.hl_id, l_match.hl_id = " .. string([r_match.hl_id.inner_value, l_match.hl_id.inner_value])
-            # echom "r_match.winid, l_match.winid = " .. string([r_match.winid, l_match.winid])
+            l_match.HighLightClear()
+            r_match.HighLight()
+        endif
+        PairManager.last_match = re_match
+    enddef
+
+    static def HighLightFlush(bufid: number)
+        const start = reltimefloat(reltime())
+        const [_, row, col, _]      = getpos('.')
+        final cursor_pos: Position  = Position.new('', row, col)
+        final cache:      PairCache = PairManager.Get(bufid)
+        var   re_match:   Result    = cache.SearchMatchStack(cursor_pos)
+        final winid:      number    = win_getid()
+
+        if [re_match.IsFailure, last_match.IsFailure] ==# [true, true]
+        elseif [re_match.IsFailure, last_match.IsFailure] ==# [true, false]
+            const l_match: MatchPair = PairManager.last_match.inner_value
+            l_match.HighLightClear()
+        elseif [re_match.IsFailure, last_match.IsFailure] ==# [false, true]
+            const r_match: MatchPair = re_match.inner_value
+            r_match.HighLight()
+        elseif [re_match.IsFailure, last_match.IsFailure] ==# [false, false]
+            const r_match: MatchPair = re_match.inner_value
+            const l_match: MatchPair = PairManager.last_match.inner_value
+
             if (winid !=# l_match.winid)
                 || (true ==# r_match.hl_id.IsFailure)
                 || (l_match.hl_id.inner_value !=# r_match.hl_id.inner_value)
@@ -559,23 +790,26 @@ class PairManager
             endif
         endif
         PairManager.last_match = re_match
-
     enddef
 
-    static def UpdateOnNeed(row: number)
-        final bufid: number    = bufnr()
+    static def UpdateOnNeed(bufid: number, row: number, total: bool): Result
         final cache: PairCache = PairManager.Get(bufid)
-        cache.UpdateOnNeed(row)
+        return cache.UpdateOnNeed(row, total)
     enddef
 
-    static def UpdateOnCondition(count: number = 0)
-        final bufid: number    = bufnr()
+    static def UpdateOnCallback(bufnr: number, matches: list<MatchPair>, start: number, end: number)
+        final bufid: number    = bufnr
         final cache: PairCache = PairManager.Get(bufid)
-        cache.UpdateOnCondition(count)
+        cache.UpdateOnCallback(matches, start, end)
+    enddef
+
+    static def ClearCache(bufid: number, clear_start: number, clear_end: number)
+        final cache: PairCache = PairManager.Get(bufid)
+        cache.ClearCache(clear_start, clear_end)
     enddef
 
     static def Get(bufid: number): PairCache
-        if PairManager.id_cache->keys()->index(string(bufid)) ==# -1
+        if !PairManager.id_cache->has_key(string(bufid))
             PairManager.id_cache[bufid] = PairCache.new(bufid)
         endif
         return PairManager.id_cache[bufid]
@@ -590,16 +824,12 @@ class PairManager
 
         if mode() ==# 'n'
             if match.left.row ==# match.right.row && match.left.bcol + match.left.len ==# match.right.bcol
-                # case0: left and right are too close () {} []
                 cursor(match.left.row, match.left.bcol)
-                # add _
                 normal! a_
                 cursor(match.left.row, match.left.bcol + match.left.len)
                 normal! v
             else
-                # case1: left and right are in diffent lines
                 if match.right.bcol ==# 1
-                    # case2: right is the first character
                     cursor(match.right.row - 1, len(getline(match.right.row - 1)))
                 else
                     cursor(match.right.row, match.right.bcol - 1)
@@ -610,15 +840,12 @@ class PairManager
         elseif mode() ==# 'v'
             normal! v
             if len(getline(match.left.row)) ==# match.left.bcol
-                # case0: left is the last character, move to the first character in the next line
                 cursor(match.left.row + 1, 1)
             else
-                # case1: left is not the last character, move to the next character
                 cursor(match.left.row, match.left.bcol + match.left.len)
             endif
             normal! v
             if match.right.bcol ==# 1
-                # case2: right is the first character
                 cursor(match.right.row - 1, len(getline(match.right.row - 1)))
             else
                 cursor(match.right.row, match.right.bcol - 1)
@@ -750,42 +977,74 @@ class MatchOper
     static def Select(char: string, match: MatchPair)
         if char ==# 'd'
             MatchOper.DeletePair(match)
-            # echom 'delete ' .. match.left.content .. match.right.content
             popup_notification(['delete' .. match.left.content .. match.right.content], {'time': 700})
         elseif char ==# 'c'
             const new_char = input('please enter')
             MatchOper.ChangePair(match, new_char, new_char)
             popup_notification(['replaced by' .. [new_char, new_char]->join(' ')], {'time': 700})
-            # echom 'replaced by ' .. [new_char, new_char]->join(' ')
         elseif InChar(char)
             const [left, right] = g:gmotion_pair->copy()->filter((idx: number, p: list<string>): bool => p->index(char) !=# -1)[0]
             MatchOper.ChangePair(match, left, right)
             popup_notification(['replaced by' .. [left, right]->join(' ')], {'time': 700})
-            # echom 'replaced by ' .. [left, right]->join(' ')
         else
             popup_notification(['undefined motion'], {'time': 700})
-            # echom 'undefined operator!'
         endif
     enddef
 endclass
 
+def OnlyBufType(insert_leave: bool = true, total: bool = false)
+    const bufid = bufnr()
+    const [_, row1, _, _] = getpos("'[")
+    const [_, row2, _, _] = getpos("']")
+    var [start,       end]       = [row1, row2]
+    var [clear_start, clear_end] = [row1, row2]
+    var direct_call_job = false
+
+    if total
+        [start, clear_start] = [1, 1]
+        end = line('$')
+        clear_end = end
+    else
+        const [_, row, col, _] = getpos('.')
+        const ab_result = ParseLineRange(row)
+        if ab_result.IsFailure
+            direct_call_job = true
+            clear_start = 1
+            clear_end = line('$')
+            start = 1
+            end = clear_end
+        else
+            const [a, b] = ab_result.inner_value
+            [start, end] = [a, b]
+            if insert_leave
+                clear_start = a
+                clear_end = b
+            elseif row1 !=# row2 || (len(getreg('"')) > 1)
+                clear_start = row1
+                clear_end   = line('$')
+            endif
+        endif
+    endif
+    PairManager.ClearCache(bufid, clear_start, clear_end)
+    if direct_call_job
+        CallOnJob(bufid, start, end)
+    else
+        const result = PairManager.UpdateOnNeed(bufid, line('.'), !insert_leave)
+        if result.IsFailure
+            CallOnJob(bufid, start, end)
+        else
+        endif
+    endif
+enddef
+
 aug Gmotion
-au User      Init PairManager.UpdateOnNeed(line('.'))
-au User      Init PairManager.HighLight(false)
-
-au TextChanged  * PairManager.UpdateOnNeed(line('.'))
-au InsertLeave  * PairManager.UpdateOnNeed(line('.'))
-au InsertLeave  * PairManager.HighLight()
-au CursorMoved  * PairManager.HighLight(false)
-au TextChanged  * PairManager.HighLight()
-au BufDelete    * PairManager.RemoveCache()
-
-au BufEnter     * doautocmd User Init
+au User Init InitBuffer()
+au TextChanged * OnlyBufType(false)
+au TextChanged * PairManager.HighLightFlush(bufnr())
+au VimEnter    * ++once InitBuffer()
+au BufDelete   * PairManager.RemoveCache()
 aug END
 
-
-# au User      Init PairManager.UpdateOnCondition(&lines)
-# au User Init PairManager.UpdateSyntaxTree(line('$'))
 
 
 ono ig <ScriptCmd> PairManager.IGmap()<CR>
@@ -800,4 +1059,77 @@ vno gh <ScriptCmd> PairManager.GHmap()<CR>
 vno gl <ScriptCmd> PairManager.GLmap()<CR>
 nno gr <ScriptCmd> PairManager.GRop()<CR>
 
-command -nargs=?  -count=100 GmotionUpdate PairManager.UpdateOnCondition(<count>)
+def CreateParseJob(bufid: number, start: number, end: number): job
+    const base = start
+
+    const buffer = getline(start, end)->join("\n")
+    const job = job_start('/home/rongzi/.config/scripts/pairparse', {
+        "noblock": 0,
+        "in_mode": "nl",
+        "out_mode": "raw",
+        "timeout": 100000,
+        "stoponexit": "kill",
+        "out_cb": (ch: channel, msg: string) => {
+            const matches = From_tree_sitter(msg, base)
+            PairManager.UpdateOnCallback(bufid, matches, start, end)
+            PairManager.HighLightFlush(bufid)
+        }
+    })
+    const channel = job_getchannel(job)
+    ch_sendraw(channel, buffer)
+    ch_close_in(channel)
+    return job
+enddef
+
+def InitAutoCmd(bufid: number, start: number, end: number): job
+    const base = start
+    const buffer = getline(start, end)->join("\n")
+    const job = job_start('/home/rongzi/.config/scripts/pairparse', {
+        "noblock": 0,
+        "in_mode": "nl",
+        "out_mode": "raw",
+        "timeout": 2000,
+        "stoponexit": "kill",
+        "out_cb": (ch: channel, msg: string) => {
+            const matches = From_tree_sitter(msg, base)
+            PairManager.UpdateOnCallback(bufid, matches, start, end)
+            PairManager.HighLightFlush(bufid)
+            au BufReadPost * InitBuffer()
+            au CursorMoved,InsertLeave * PairManager.HighLight()
+        }
+    })
+    const channel = job_getchannel(job)
+    ch_sendraw(channel, buffer)
+    ch_close_in(channel)
+    return job
+enddef
+
+
+var current_job: Result = Failure.new("null job")
+
+def CallOnJob(bufid: number, start: number, end: number)
+    if !current_job.IsFailure
+        if job_status(current_job.inner_value) !=# 'dead'
+            job_stop(current_job.inner_value, 'kill')
+        endif
+    endif
+    current_job = Call_test(bufid, start, end)
+enddef
+
+def Call_test(bufid: number, start: number, end: number): Result
+    if [-1, -1] ==# [start, end]
+        PairManager.HighLightFlush(bufid)
+        return Failure.new("null job")
+    endif
+    return Success.new(CreateParseJob(bufid, start, end))
+enddef
+
+def InitBuffer()
+    const bufid = bufnr()
+    const [start, end] = [1, line('$')]
+    PairManager.ClearCache(bufid, start, end)
+    const job = InitAutoCmd(bufid, start, end)
+enddef
+
+command -nargs=0 GmotionTest doautocmd User Init
+command -nargs=0 GmotionUU echo ParseLines(1, line('$'))
