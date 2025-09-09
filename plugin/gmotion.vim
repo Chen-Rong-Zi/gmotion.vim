@@ -45,6 +45,8 @@ else
         ['[', ']'],
         ['{', '}'],
         ['`', '`'],
+        ['"', '"'],
+        ["'", "'"],
     ]
 endif
 
@@ -301,14 +303,15 @@ class MatchPairStack
                 return this.back_special.PushLeft(pos)
             endif
 
-            const l_pos: Position = top.inner_value
-            if InPair([l_pos.content, pos.content])
+            const r_pos: Position = top.inner_value
+            if InPair([pos.content, r_pos.content])
                 this.back_special.Pop()
-                return [MatchPair.new(l_pos, pos)]
+                return [MatchPair.new(pos, r_pos)]
             else
                 return this.back_special.PushLeft(pos)
             endif
         elseif InLpart(pos.content)
+            # if InPair([l_pos.content, pos.content])
             return this.back.PushLeft(pos)
         else
             return this.back.PushRight(pos)
@@ -539,6 +542,7 @@ enddef
 def From_tree_sitter(output: string, base: number): list<MatchPair>
     const lines = output->split("\n")
     const length = len(lines)
+    # echom "base = " .. string(base)
     return F_parse(lines[ : -(length % 3 + 1)], base)
 enddef
 
@@ -656,7 +660,7 @@ class PairCache
                 && stack.back.Last().inner_value.is_first_line
                 && (back_path >=# 1)
             back_path -= 1
-            thisline = getline(front_path)
+            thisline = getline(back_path)
             total_chars += len(thisline)
 
             thisline_tokens = Tokenize(thisline, back_path)
@@ -699,8 +703,12 @@ class PairCache
 
     def UpdateOnCallback(match_lst: list<MatchPair>, start: number, end: number)
         for match in match_lst
-            this.cache[match.right.row]->insert(match, 0)
-            this.cache[match.left.row]->insert(match,  0)
+            if this.cache->has_key(match.right.row)
+                this.cache[match.right.row]->insert(match, 0)
+            endif
+            if this.cache->has_key(match.left.row)
+                this.cache[match.left.row]->insert(match, 0)
+            endif
         endfor
     enddef
 
@@ -736,7 +744,7 @@ class PairManager
         final winid:      number    = win_getid()
 
         if [re_match.IsFailure, last_match.IsFailure] ==# [true, true]
-            OnlyBufType(true)
+            OnlyBufType(true, false, true)
             re_match = cache.SearchMatchStack(cursor_pos)
             if false ==# re_match.IsFailure
                 re_match.inner_value.HighLight()
@@ -744,7 +752,7 @@ class PairManager
         elseif [re_match.IsFailure, last_match.IsFailure] ==# [true, false]
             const l_match: MatchPair = PairManager.last_match.inner_value
             l_match.HighLightClear()
-            OnlyBufType()
+            OnlyBufType(true, false, true)
             re_match = cache.SearchMatchStack(cursor_pos)
             if false ==# re_match.IsFailure
                 re_match.inner_value.HighLight()
@@ -772,13 +780,17 @@ class PairManager
         final winid:      number    = win_getid()
 
         if [re_match.IsFailure, last_match.IsFailure] ==# [true, true]
+            # echom "flush case0"
         elseif [re_match.IsFailure, last_match.IsFailure] ==# [true, false]
+            # echom "flush case1"
             const l_match: MatchPair = PairManager.last_match.inner_value
             l_match.HighLightClear()
         elseif [re_match.IsFailure, last_match.IsFailure] ==# [false, true]
+            # echom "flush case2"
             const r_match: MatchPair = re_match.inner_value
             r_match.HighLight()
         elseif [re_match.IsFailure, last_match.IsFailure] ==# [false, false]
+            # echom "flush case3"
             const r_match: MatchPair = re_match.inner_value
             const l_match: MatchPair = PairManager.last_match.inner_value
 
@@ -794,7 +806,9 @@ class PairManager
 
     static def UpdateOnNeed(bufid: number, row: number, total: bool): Result
         final cache: PairCache = PairManager.Get(bufid)
-        return cache.UpdateOnNeed(row, total)
+        const result = cache.UpdateOnNeed(row, total)
+        # PairManager.HighLightFlush(bufid)
+        return result
     enddef
 
     static def UpdateOnCallback(bufnr: number, matches: list<MatchPair>, start: number, end: number)
@@ -992,7 +1006,7 @@ class MatchOper
     enddef
 endclass
 
-def OnlyBufType(insert_leave: bool = true, total: bool = false)
+def OnlyBufType(insert_leave: bool = true, total: bool = false, do_nothing: bool = false)
     const bufid = bufnr()
     const [_, row1, _, _] = getpos("'[")
     const [_, row2, _, _] = getpos("']")
@@ -1000,6 +1014,7 @@ def OnlyBufType(insert_leave: bool = true, total: bool = false)
     var [clear_start, clear_end] = [row1, row2]
     var direct_call_job = false
 
+    const time1 = reltimefloat(reltime())
     if total
         [start, clear_start] = [1, 1]
         end = line('$')
@@ -1008,6 +1023,7 @@ def OnlyBufType(insert_leave: bool = true, total: bool = false)
         const [_, row, col, _] = getpos('.')
         const ab_result = ParseLineRange(row)
         if ab_result.IsFailure
+            # echom "ab_result = " .. ab_result.inner_value
             direct_call_job = true
             clear_start = 1
             clear_end = line('$')
@@ -1025,22 +1041,33 @@ def OnlyBufType(insert_leave: bool = true, total: bool = false)
             endif
         endif
     endif
+    const time2 = reltimefloat(reltime())
     PairManager.ClearCache(bufid, clear_start, clear_end)
     if direct_call_job
-        CallOnJob(bufid, start, end)
+        CallOnJob(bufid, start, end, do_nothing)
+        const time3 = reltimefloat(reltime())
+        # echom "call job, hang up , calling cost " .. (time3 - time2)
     else
+        const time4  = reltimefloat(reltime())
         const result = PairManager.UpdateOnNeed(bufid, line('.'), !insert_leave)
+        const time5  = reltimefloat(reltime())
+        # echom "updateOnNeed cost " .. (time5 - time4)
         if result.IsFailure
-            CallOnJob(bufid, start, end)
+            CallOnJob(bufid, start, end, do_nothing)
+            const time6 = reltimefloat(reltime())
+            # echom "call job, cause: " .. result.inner_value .. "  calling cost " .. (time6 - time5)
         else
+            # echom "finish parse"
         endif
     endif
+    const time7 = reltimefloat(reltime())
+    # echom "total cost " .. (time7 - time1)
 enddef
 
 aug Gmotion
+autocmd!
 au User Init InitBuffer()
-au TextChanged * OnlyBufType(false)
-au TextChanged * PairManager.HighLightFlush(bufnr())
+ # au TextChanged * PairManager.HighLightFlush(bufnr())
 au VimEnter    * ++once InitBuffer()
 au BufDelete   * PairManager.RemoveCache()
 aug END
@@ -1061,32 +1088,15 @@ nno gr <ScriptCmd> PairManager.GRop()<CR>
 
 def CreateParseJob(bufid: number, start: number, end: number): job
     const base = start
+    const time1 = reltimefloat(reltime())
 
-    const buffer = getline(start, end)->join("\n")
+    # const buffer = getline(start, end)->join("\n")
+    const time2 = reltimefloat(reltime())
+    # echom "CreateParseJob join buffer " .. (time2 - time1)
+    # echom '/home/rongzi/.config/scripts/pairparse ' ..  expand('%:p')
     const job = job_start('/home/rongzi/.config/scripts/pairparse', {
         "noblock": 0,
-        "in_mode": "nl",
-        "out_mode": "raw",
-        "timeout": 100000,
-        "stoponexit": "kill",
-        "out_cb": (ch: channel, msg: string) => {
-            const matches = From_tree_sitter(msg, base)
-            PairManager.UpdateOnCallback(bufid, matches, start, end)
-            PairManager.HighLightFlush(bufid)
-        }
-    })
-    const channel = job_getchannel(job)
-    ch_sendraw(channel, buffer)
-    ch_close_in(channel)
-    return job
-enddef
-
-def InitAutoCmd(bufid: number, start: number, end: number): job
-    const base = start
-    const buffer = getline(start, end)->join("\n")
-    const job = job_start('/home/rongzi/.config/scripts/pairparse', {
-        "noblock": 0,
-        "in_mode": "nl",
+        "in_mode": "json",
         "out_mode": "raw",
         "timeout": 2000,
         "stoponexit": "kill",
@@ -1094,12 +1104,46 @@ def InitAutoCmd(bufid: number, start: number, end: number): job
             const matches = From_tree_sitter(msg, base)
             PairManager.UpdateOnCallback(bufid, matches, start, end)
             PairManager.HighLightFlush(bufid)
+        }
+    })
+    const time3 = reltimefloat(reltime())
+    # echom "CreateParseJob start job " .. (time3 - time2)
+    const channel = job_getchannel(job)
+    # for l in getline(start, end)
+        # ch_sendraw(channel, l)
+    # endfor
+    ch_sendexpr(channel, getbufline(bufid, start, end))
+    ch_close_in(channel)
+    const time4 = reltimefloat(reltime())
+    # echom "CreateParseJob total cost " .. (time4 - time1)
+    return job
+enddef
+
+def InitAutoCmd(bufid: number, start: number, end: number): job
+    const base = start
+    # const buffer = getline(start, end)->join("\n")
+    const job = job_start('/home/rongzi/.config/scripts/pairparse', {
+        "noblock":  0,
+        "in_mode":  "json",
+        "out_mode": "raw",
+        "timeout": 2000,
+        "stoponexit": "kill",
+        "out_cb": (ch: channel, msg: string) => {
+            # writefile(msg->split("\n"), "/tmp/msg.1", "a")
+            const matches = From_tree_sitter(msg, base)
+            PairManager.UpdateOnCallback(bufid, matches, start, end)
+            PairManager.HighLightFlush(bufid)
+            aug GmotionUpdate
+            autocmd!
             au BufReadPost * InitBuffer()
-            au CursorMoved,InsertLeave * PairManager.HighLight()
+            au TextChanged,InsertLeave * OnlyBufType(false)
+            au TextChanged,CursorMoved,InsertLeave * PairManager.HighLight()
+            aug END
         }
     })
     const channel = job_getchannel(job)
-    ch_sendraw(channel, buffer)
+    # ch_sendraw(channel, buffer)
+    ch_sendexpr(channel, getbufline(bufid, start, end))
     ch_close_in(channel)
     return job
 enddef
@@ -1107,8 +1151,11 @@ enddef
 
 var current_job: Result = Failure.new("null job")
 
-def CallOnJob(bufid: number, start: number, end: number)
+def CallOnJob(bufid: number, start: number, end: number, do_nothing: bool = true)
     if !current_job.IsFailure
+        if  do_nothing
+            return
+        endif
         if job_status(current_job.inner_value) !=# 'dead'
             job_stop(current_job.inner_value, 'kill')
         endif
@@ -1129,6 +1176,7 @@ def InitBuffer()
     const [start, end] = [1, line('$')]
     PairManager.ClearCache(bufid, start, end)
     const job = InitAutoCmd(bufid, start, end)
+    current_job = Success.new(job)
 enddef
 
 command -nargs=0 GmotionTest doautocmd User Init
