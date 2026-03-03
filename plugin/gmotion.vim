@@ -1076,7 +1076,7 @@ def CreateParseJob(bufid: number, start: number, end: number): job
 
     const job = job_start('/home/rongzi/.config/scripts/pairparse', {
         "noblock": 0,
-        "in_mode": "json",
+        "in_mode": "raw",
         "out_mode": "raw",
         "timeout": 2000,
         "stoponexit": "kill",
@@ -1087,7 +1087,7 @@ def CreateParseJob(bufid: number, start: number, end: number): job
         }
     })
     const channel = job_getchannel(job)
-    ch_sendexpr(channel, getbufline(bufid, start, end))
+    ch_sendraw(channel, getbufline(bufid, start, end)->join("\n"))
     ch_close_in(channel)
     return job
 enddef
@@ -1096,7 +1096,7 @@ def InitAutoCmd(bufid: number, start: number, end: number): job
     const base = start
     const job = job_start('/home/rongzi/.config/scripts/pairparse', {
         "noblock":  0,
-        "in_mode":  "json",
+        "in_mode":  "raw",
         "out_mode": "raw",
         "timeout": 2000,
         "stoponexit": "kill",
@@ -1113,7 +1113,7 @@ def InitAutoCmd(bufid: number, start: number, end: number): job
         }
     })
     const channel = job_getchannel(job)
-    ch_sendexpr(channel, getbufline(bufid, start, end))
+    ch_sendraw(channel, getbufline(bufid, start, end)->join("\n"))
     ch_close_in(channel)
     return job
 enddef
