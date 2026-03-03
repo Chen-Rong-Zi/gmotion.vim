@@ -433,7 +433,8 @@ def ParseLineRange(row: number): Result # list<number>
     if [[], []] ==# back_front
         return Success.new([row, row])
     elseif [] ==# back_front
-        return Success.new([-1, -1])
+        # return Success.new([-1, -1])
+        return Failure.new('Exceed Max Chars:' .. string(total_chars) .. "  Max Tokens: " .. string(total_tokens))
     endif
     const [back, front] = back_front
 
@@ -1016,6 +1017,7 @@ def OnlyBufType(insert_leave: bool = true, total: bool = false, do_nothing: bool
 
     const time1 = reltimefloat(reltime())
     if total
+
         [start, clear_start] = [1, 1]
         end = line('$')
         clear_end = end
@@ -1023,16 +1025,22 @@ def OnlyBufType(insert_leave: bool = true, total: bool = false, do_nothing: bool
         const [_, row, col, _] = getpos('.')
         const ab_result = ParseLineRange(row)
         if ab_result.IsFailure
-            # echom "ab_result = " .. ab_result.inner_value
+
             direct_call_job = true
             clear_start = 1
             clear_end = line('$')
             start = 1
             end = clear_end
         else
+
             const [a, b] = ab_result.inner_value
             [start, end] = [a, b]
-            if insert_leave
+            if a ==# -1 || b ==# -1
+                clear_start = 0
+                clear_end   = 0
+
+                return
+            elseif insert_leave
                 clear_start = a
                 clear_end = b
             elseif row1 !=# row2 || (len(getreg('"')) > 1)
@@ -1130,7 +1138,9 @@ def InitAutoCmd(bufid: number, start: number, end: number): job
         "stoponexit": "kill",
         "out_cb": (ch: channel, msg: string) => {
             # writefile(msg->split("\n"), "/tmp/msg.1", "a")
+
             const matches = From_tree_sitter(msg, base)
+
             PairManager.UpdateOnCallback(bufid, matches, start, end)
             PairManager.HighLightFlush(bufid)
             aug GmotionUpdate
@@ -1180,4 +1190,3 @@ def InitBuffer()
 enddef
 
 command -nargs=0 GmotionTest doautocmd User Init
-command -nargs=0 GmotionUU echo ParseLines(1, line('$'))
